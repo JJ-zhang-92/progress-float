@@ -55,6 +55,8 @@ function aggregateState() {
     }
     projectEntries[name] = {
       active: entry.state.active || false,
+      phase: entry.state.phase || "idle",
+      waitingForUser: entry.state.waitingForUser || false,
       toolCount: entry.state.toolCount || 0,
       taskCount: entry.state.taskCount || 0,
       sessions: entry.state.sessions || {},
@@ -81,16 +83,24 @@ function aggregateState() {
 
   // Compute totals
   let totalActive = false;
+  let totalPhase = "idle";
+  let totalWaitingForUser = false;
   let totalToolCount = 0;
   let totalTaskCount = 0;
   for (const p of Object.values(projectEntries)) {
     if (p.active) totalActive = true;
+    if (p.waitingForUser) totalWaitingForUser = true;
     totalToolCount += p.toolCount;
     totalTaskCount += p.taskCount;
+    // Phase priority: waiting > executing > thinking > idle
+    const order = { waiting: 3, executing: 2, thinking: 1, idle: 0 };
+    if (order[p.phase] > order[totalPhase]) totalPhase = p.phase;
   }
 
   return {
     active: totalActive,
+    phase: totalPhase,
+    waitingForUser: totalWaitingForUser,
     toolCount: totalToolCount,
     taskCount: totalTaskCount,
     projects: projectEntries,
