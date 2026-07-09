@@ -100,18 +100,34 @@ CAT_ICONS={
     "webfetch":"\u21c4","question":"?","todowrite":"\u2261","skill":"\u2666",
 }
 
-BR=28; CW,CH=120,120; PW,PH=320,400
+BR=30; CW,CH=120,120; PW,PH=320,400
+SR=55; SC=140  # sprite radius, sprite canvas size
+FEATHER=10
 
-def _load_sprites(size=110):
-    """Load PNG sprites, resize and apply circular mask. Returns {phase: PhotoImage}."""
+def _load_sprites(size=110, feather=10):
+    """Load PNG sprites, resize and apply radial-gradient circular mask. Returns {phase: PhotoImage}."""
+    import numpy as np
     sprites = {}
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+    # Build radial gradient mask: 255 at center, 0 at edge, smooth transition
+    mask = np.zeros((size, size), dtype=np.uint8)
+    cy = cx = size / 2.0
+    radius = size / 2.0
+    inner = radius - feather
+    for y in range(size):
+        dy = y - cy
+        for x in range(size):
+            dist = math.sqrt((x - cx)**2 + dy*dy)
+            if dist <= inner:
+                mask[y, x] = 255
+            elif dist <= radius:
+                t = (radius - dist) / feather
+                mask[y, x] = int(t * 255)
+    pil_mask = Image.fromarray(mask, mode="L")
     for phase, fn in [("executing","working"), ("thinking","thinking"), ("idle","idle"), ("waiting","alert")]:
         p = os.path.join(_SPRITE_DIR, fn + ".png")
         if not os.path.exists(p): continue
         img = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
-        img.putalpha(mask)
+        img.putalpha(pil_mask)
         sprites[phase] = ImageTk.PhotoImage(img)
     return sprites
 
@@ -139,6 +155,8 @@ class App:
         # sprite mode
         self.sprite_mode = False
         self.sprites = _load_sprites()
+        self.zzzs = []         # idle Zzz float particles
+        self._decor_timer = 0  # ticks for decor animations
 
         threading.Thread(target=self._poll,daemon=True).start()
         self._anim()
@@ -181,33 +199,62 @@ class App:
     # ── Draw ──
     def _draw(self):
         c=self.canvas; c.delete("all")
-        cx,cy=CW//2,CH//2; r=BR
         p=self.phase
 
         if self.sprite_mode and p in self.sprites:
-            self._draw_sprite(c, cx, cy, r, p)
+            self._draw_sprite(c, p)
         else:
-            self._draw_ball(c, cx, cy, r, p)
+            cx, cy = CW//2, CH//2
+            self._draw_ball(c, cx, cy, BR, p)
 
-    def _draw_sprite(self, c, cx, cy, r, p):
-        # glow ring
+    def _draw_sprite(self, c, p):
+        cx = cy = SC // 2; r = SR
+        # glow ring — dynamic radius around sprite
         glow_map = {"executing":(0x34,0xd3,0x99),"thinking":(0xf5,0x9e,0x0b),"waiting":(0xef,0x44,0x44)}
         if p in glow_map:
             gr2,gg2,gb2 = glow_map[p]
             for i in range(3):
-                pi=(self.pulse+i*0.33)%1.0; gr2_=r+8+pi*22
+                pi=(self.pulse+i*0.33)%1.0; gr2_=r+4+pi*18
                 alpha=int((1-pi)*200+55)
                 c.create_oval(cx-gr2_,cy-gr2_,cx+gr2_,cy+gr2_,
-                    outline=f"#{gr2:02x}{gg2:02x}{min(255,gb2+alpha):02x}",width=3)
+                    outline=f"#{gr2:02x}{gg2:02x}{min(255,gb2+alpha):02x}",width=2)
         # sprite image
-        sz = 55
         c.create_image(cx, cy, image=self.sprites[p])
-        # badge
-        if self.tc>0:
-            bx,by=cx+r-2,cy-r-2
-            c.create_oval(bx-14,by-14,bx+14,by+14,fill=T.RED,outline="#ffffff",width=2)
+        # decor: state-specific indicators outside sprite
+        self._draw_decor(c, p, cx, cy, r)
+        # badge — top-right
+        if self.tc > 0:
+            bx, by = cx + r - 2, cy - r + 12
+            c.create_oval(bx-11,by-11,bx+11,by+11,fill=T.RED,outline="#ffffff",width=1)
             txt=str(self.tc) if self.tc<100 else "99"; fs=9 if len(txt)<=1 else 8
             c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
+
+    def _draw_decor(self, c, p, cx, cy, r):
+        """Draw phase-specific decorations outside the sprite portrait."""
+        if p == "executing":
+            # rotating dots around the sprite edge
+            for i in range(4):
+                a = (self.pulse * 3 + i * 1.57) % 6.283
+                dx = math.cos(a) * (r + 10)
+                dy = math.sin(a) * (r + 10)
+                sz = 3
+                c.create_oval(cx+dx-sz, cy+dy-sz, cx+dx+sz, cy+dy+sz,
+                    fill=T.GREEN2, outline="")
+        elif p == "thinking":
+            ps = (math.sin(self.pulse * 2) + 1) / 2
+            fs = 11 + int(ps * 4)
+            c.create_text(cx, cy + r + 12, text="?", fill=T.AMBER2,
+                font=("Segoe UI", fs, "bold"))
+        elif p == "waiting":
+            ps = (math.sin(self.pulse * 3) + 1) / 2
+            fs = 15 + int(ps * 6)
+            c.create_text(cx, cy + r + 10, text="!", fill=T.RED,
+                font=("Segoe UI", fs, "bold"))
+        else:  # idle
+            for z in self.zzzs:
+                fs = max(7, 11 - z["age"] // 15)
+                c.create_text(z["x"], z["y"], text="z",
+                    fill=T.MUTED, font=("Segoe UI", fs, "bold"))
 
     def _draw_ball(self, c, cx, cy, r, p):
         # body color
@@ -257,9 +304,24 @@ class App:
             c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
 
     def _anim(self):
-        self.pulse+=0.05
+        self.pulse += 0.05
+        self._decor_timer += 1
+
+        # idle Zzz float animation: spawn every ~3s, drift up, shrink, expire
+        if self.sprite_mode and self.phase == "idle" and self._decor_timer % 90 == 0:
+            cx = SC // 2
+            self.zzzs.append({"x": cx - 30, "y": SC - 10, "age": 0})
+        # update existing zzz particles
+        for z in self.zzzs[:]:
+            z["y"] -= 0.4
+            z["age"] += 1
+            if z["age"] > 80:
+                self.zzzs.remove(z)
+        if self.phase != "idle":
+            self.zzzs.clear()
+
         self._draw()
-        if self.running: self.root.after(33,self._anim)
+        if self.running: self.root.after(33, self._anim)
 
     def _lerp(self,c1,c2,t):
         r1,g1,b1=int(c1[1:3],16),int(c1[3:5],16),int(c1[5:7],16)
@@ -283,7 +345,8 @@ class App:
         self.panel.overrideredirect(True); self.panel.attributes("-topmost",True)
         self.panel.attributes("-transparentcolor",T.MAGENTA); self.panel.configure(bg=T.MAGENTA)
         bx,by=self.root.winfo_x(),self.root.winfo_y()
-        self.panel.geometry(f"{PW}x{PH}+{max(0,bx-PW+CW)}+{max(0,by-PH-12)}")
+        w = SC if self.sprite_mode else CW
+        self.panel.geometry(f"{PW}x{PH}+{max(0,bx-PW+w)}+{max(0,by-PH-12)}")
         self.pc=tk.Canvas(self.panel,width=PW,height=PH,bg=T.MAGENTA,highlightthickness=0)
         self.pc.pack()
         self.panel.bind("<FocusOut>",lambda e:self._hide_panel())
@@ -430,13 +493,20 @@ class App:
 
     def _toggle_sprite(self):
         self.sprite_mode = not self.sprite_mode
+        w = SC if self.sprite_mode else CW
+        h = SC if self.sprite_mode else CH
+        self.canvas.config(width=w, height=h)
+        self.root.geometry(f"{w}x{h}")
+        self.zzzs.clear()
 
     def _drag(self,e):
-        x=self.root.winfo_x()+e.x-CW//2
-        y=self.root.winfo_y()+e.y-CH//2
+        w = SC if self.sprite_mode else CW
+        h = SC if self.sprite_mode else CH
+        x=self.root.winfo_x()+e.x-w//2
+        y=self.root.winfo_y()+e.y-h//2
         self.root.geometry(f"+{x}+{y}")
         if self.popen and self.panel:
-            self.panel.geometry(f"+{max(0,x-PW+CW)}+{max(0,y-PH-12)}")
+            self.panel.geometry(f"+{max(0,x-PW+w)}+{max(0,y-PH-12)}")
 
     def _close(self):
         self.running=False
