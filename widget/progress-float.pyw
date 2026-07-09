@@ -1,10 +1,13 @@
 """Progress Float — OpenCode floating progress ball.
-State machine: GREEN(active) → AMBER(thinking 8s) → GRAY(idle)"""
+State machine: GREEN(active) → AMBER(thinking) → GRAY(idle) → RED(waiting)"""
 
 import tkinter as tk
 import threading, time, math, sys, os, atexit, ctypes, subprocess
 import json as _json
 import urllib.request, urllib.error
+from PIL import Image, ImageDraw, ImageTk
+
+_SPRITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprites")
 
 # Config from config.json
 _config = {"port":19822,"cacheDir":"","thinkingTimeoutS":8,"staleThresholdS":60,"heartbeatThresholdS":15}
@@ -99,6 +102,19 @@ CAT_ICONS={
 
 BR=28; CW,CH=120,120; PW,PH=320,400
 
+def _load_sprites(size=110):
+    """Load PNG sprites, resize and apply circular mask. Returns {phase: PhotoImage}."""
+    sprites = {}
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+    for phase, fn in [("executing","working"), ("thinking","thinking"), ("idle","idle"), ("waiting","alert")]:
+        p = os.path.join(_SPRITE_DIR, fn + ".png")
+        if not os.path.exists(p): continue
+        img = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
+        img.putalpha(mask)
+        sprites[phase] = ImageTk.PhotoImage(img)
+    return sprites
+
 class App:
     def __init__(self):
         self.root=tk.Tk()
@@ -119,6 +135,10 @@ class App:
         self.projects={}; self.sessions={}; self.tools=[]
         self.task_count=0; self.pulse=0.0
         self.panel=None; self.pc=None; self.popen=False; self.running=True
+
+        # sprite mode
+        self.sprite_mode = False
+        self.sprites = _load_sprites()
 
         threading.Thread(target=self._poll,daemon=True).start()
         self._anim()
@@ -164,21 +184,45 @@ class App:
         cx,cy=CW//2,CH//2; r=BR
         p=self.phase
 
+        if self.sprite_mode and p in self.sprites:
+            self._draw_sprite(c, cx, cy, r, p)
+        else:
+            self._draw_ball(c, cx, cy, r, p)
+
+    def _draw_sprite(self, c, cx, cy, r, p):
+        # glow ring
+        glow_map = {"executing":(0x34,0xd3,0x99),"thinking":(0xf5,0x9e,0x0b),"waiting":(0xef,0x44,0x44)}
+        if p in glow_map:
+            gr2,gg2,gb2 = glow_map[p]
+            for i in range(3):
+                pi=(self.pulse+i*0.33)%1.0; gr2_=r+8+pi*22
+                alpha=int((1-pi)*200+55)
+                c.create_oval(cx-gr2_,cy-gr2_,cx+gr2_,cy+gr2_,
+                    outline=f"#{gr2:02x}{gg2:02x}{min(255,gb2+alpha):02x}",width=3)
+        # sprite image
+        sz = 55
+        c.create_image(cx, cy, image=self.sprites[p])
+        # badge
+        if self.tc>0:
+            bx,by=cx+r-2,cy-r-2
+            c.create_oval(bx-14,by-14,bx+14,by+14,fill=T.RED,outline="#ffffff",width=2)
+            txt=str(self.tc) if self.tc<100 else "99"; fs=9 if len(txt)<=1 else 8
+            c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
+
+    def _draw_ball(self, c, cx, cy, r, p):
         # body color
         bc={"executing":T.GREEN,"thinking":T.AMBER,"idle":T.GRAY,"waiting":T.RED}.get(p,T.GRAY)
         hl=self._lerp(bc,"#ffffff",0.12)
 
-        # glow — active phases
+        # glow
         if p in ("executing","thinking","waiting"):
             glow_r,glow_g,glow_b={
-                "executing":(0x34,0xd3,0x99),
-                "thinking":(0xf5,0x9e,0x0b),
-                "waiting":(0xef,0x44,0x44),
+                "executing":(0x34,0xd3,0x99),"thinking":(0xf5,0x9e,0x0b),"waiting":(0xef,0x44,0x44),
             }.get(p,(0xf5,0x9e,0x0b))
             for i in range(3):
                 pi=(self.pulse+i*0.33)%1.0; gr2=r+4+pi*20
                 alpha=int((1-pi)*200+55)
-                c.create_oval(cx-gr2,cy-gr2,cx+gr2,cy+gr2,outline=f"#{glow_r:02x}{glow_g:02x}{min(255,glow_b+alpha):02x}",width=3,tags="g")
+                c.create_oval(cx-gr2,cy-gr2,cx+gr2,cy+gr2,outline=f"#{glow_r:02x}{glow_g:02x}{min(255,glow_b+alpha):02x}",width=3)
 
         # shadow
         c.create_oval(cx-r-1,cy-r+2,cx+r-1,cy+r+2,fill="#1a1a2e",outline="",stipple="gray25")
@@ -189,7 +233,7 @@ class App:
         # inner highlight
         c.create_oval(int(cx-r*0.6),int(cy-r*0.6),int(cx+r*0.1),int(cy+r*0.1),fill="#4a4a7a",outline="",stipple="gray50")
 
-        # center icon per phase
+        # center icon
         if p=="executing":
             for i in range(4):
                 a=(self.pulse*3+i*1.57)%6.283
@@ -199,7 +243,6 @@ class App:
             ps=(math.sin(self.pulse*2)+1)/2; sz=4+ps*3
             c.create_oval(cx-sz,cy-sz,cx+sz,cy+sz,fill=T.AMBER2,outline="")
         elif p=="waiting":
-            # pulsing exclamation mark
             ps=(math.sin(self.pulse*3)+1)/2; fs=14+int(ps*4)
             c.create_text(cx,cy,text="!",fill="#ffffff",font=("Segoe UI",fs,"bold"))
         else:
@@ -208,9 +251,8 @@ class App:
         # badge
         if self.tc>0:
             bx,by=cx+r-2,cy-r-2; br=11
-            bc2=T.RED if p=="waiting" else T.RED
-            c.create_oval(bx-br-3,by-br-3,bx+br+3,by+br+3,fill=bc2,outline="",stipple="gray50")
-            c.create_oval(bx-br,by-br,bx+br,by+br,fill=bc2,outline="#aaaaaa",width=1)
+            c.create_oval(bx-br-3,by-br-3,bx+br+3,by+br+3,fill=T.RED,outline="",stipple="gray50")
+            c.create_oval(bx-br,by-br,bx+br,by+br,fill=T.RED,outline="#aaaaaa",width=1)
             txt=str(self.tc) if self.tc<100 else "99"; fs=9 if len(txt)<=1 else 8
             c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
 
@@ -380,8 +422,14 @@ class App:
 
     def _right_click(self,event):
         menu=tk.Menu(self.root,tearoff=0)
+        lbl = "Switch to Ball" if self.sprite_mode else "Switch to Sprite"
+        menu.add_command(label=lbl, command=self._toggle_sprite)
+        menu.add_separator()
         menu.add_command(label="Exit",command=self._close)
         menu.post(event.x_root,event.y_root)
+
+    def _toggle_sprite(self):
+        self.sprite_mode = not self.sprite_mode
 
     def _drag(self,e):
         x=self.root.winfo_x()+e.x-CW//2
