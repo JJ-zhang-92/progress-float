@@ -154,6 +154,7 @@ class App:
 
         # sprite mode
         self.sprite_mode = False
+        self._skin_var = tk.StringVar(value="ball")
         self.sprites = _load_sprites()
         self.zzzs = []         # idle Zzz float particles
         self._decor_timer = 0  # ticks for decor animations
@@ -485,14 +486,20 @@ class App:
 
     def _right_click(self,event):
         menu=tk.Menu(self.root,tearoff=0)
-        lbl = "Switch to Ball" if self.sprite_mode else "Switch to Sprite"
-        menu.add_command(label=lbl, command=self._toggle_sprite)
+        appearance=tk.Menu(menu,tearoff=0)
+        appearance.add_radiobutton(label="Ball", variable=self._skin_var, value="ball",
+            command=lambda: self._set_skin("ball"))
+        appearance.add_radiobutton(label="Sprite", variable=self._skin_var, value="sprite",
+            command=lambda: self._set_skin("sprite"))
+        appearance.add_separator()
+        appearance.add_command(label="+ Add skin...", state="disabled")
+        menu.add_cascade(label="Appearance", menu=appearance)
         menu.add_separator()
         menu.add_command(label="Exit",command=self._close)
         menu.post(event.x_root,event.y_root)
 
-    def _toggle_sprite(self):
-        self.sprite_mode = not self.sprite_mode
+    def _set_skin(self, skin):
+        self.sprite_mode = (skin == "sprite")
         w = SC if self.sprite_mode else CW
         h = SC if self.sprite_mode else CH
         self.canvas.config(width=w, height=h)
