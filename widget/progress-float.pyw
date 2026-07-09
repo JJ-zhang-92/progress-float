@@ -115,9 +115,9 @@ class App:
         self.canvas.bind("<B1-Motion>",self._drag)
 
         # data
-        self.tc=0; self.active=False; self.thinking=False
+        self.tc=0; self.phase="idle"; self.waiting=False
         self.projects={}; self.sessions={}; self.tools=[]
-        self.task_count=0; self._la=0; self.pulse=0.0
+        self.task_count=0; self.pulse=0.0
         self.panel=None; self.pc=None; self.popen=False; self.running=True
 
         threading.Thread(target=self._poll,daemon=True).start()
@@ -142,10 +142,9 @@ class App:
                 with urllib.request.urlopen(req,timeout=3) as r:
                     d=_json.loads(r.read().decode())
                 self.tc=d.get("toolCount",0)
-                self.tools=d.get("activeTools",[])  # backward compat
+                self.tools=d.get("activeTools",[])
                 self.sessions=d.get("sessions",{})
                 self.projects=d.get("projects",{})
-                # If projects exist and have tools, prefer those for tool count
                 if self.projects:
                     tmp = []
                     for p in self.projects.values():
@@ -153,13 +152,8 @@ class App:
                     self.tools = tmp
                 self.task_count=d.get("taskCount",0)
                 self.last_updated = d.get("lastUpdated", "")
-                svr_a=d.get("active",False) or self.tc>0
-                if svr_a:
-                    self.active=True; self.thinking=False; self._la=time.time()
-                elif self.tc==0 and self._la>0:
-                    e=time.time()-self._la
-                    if e<THINKING_TIMEOUT: self.thinking=True; self.active=False
-                    else: self.thinking=False; self.active=False
+                self.phase = d.get("phase", "idle")
+                self.waiting = d.get("waitingForUser", False)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -168,43 +162,55 @@ class App:
     def _draw(self):
         c=self.canvas; c.delete("all")
         cx,cy=CW//2,CH//2; r=BR
+        p=self.phase
 
-        # glow
-        if self.active or self.thinking:
-            glow_r,glow_g,glow_b=(0x34,0xd3,0x99) if self.active else (0xf5,0x9e,0x0b)
+        # body color
+        bc={"executing":T.GREEN,"thinking":T.AMBER,"idle":T.GRAY,"waiting":T.RED}.get(p,T.GRAY)
+        hl=self._lerp(bc,"#ffffff",0.12)
+
+        # glow — active phases
+        if p in ("executing","thinking","waiting"):
+            glow_r,glow_g,glow_b={
+                "executing":(0x34,0xd3,0x99),
+                "thinking":(0xf5,0x9e,0x0b),
+                "waiting":(0xef,0x44,0x44),
+            }.get(p,(0xf5,0x9e,0x0b))
             for i in range(3):
-                p=(self.pulse+i*0.33)%1.0; gr2=r+4+p*20
-                alpha=int((1-p)*200+55)
+                pi=(self.pulse+i*0.33)%1.0; gr2=r+4+pi*20
+                alpha=int((1-pi)*200+55)
                 c.create_oval(cx-gr2,cy-gr2,cx+gr2,cy+gr2,outline=f"#{glow_r:02x}{glow_g:02x}{min(255,glow_b+alpha):02x}",width=3,tags="g")
 
         # shadow
         c.create_oval(cx-r-1,cy-r+2,cx+r-1,cy+r+2,fill="#1a1a2e",outline="",stipple="gray25")
 
         # body
-        bc=T.GREEN if self.active else (T.AMBER if self.thinking else T.GRAY)
-        hl=self._lerp(bc,"#ffffff",0.12)
         c.create_oval(cx-r,cy-r,cx+r,cy+r,fill=bc,outline=hl,width=2)
 
         # inner highlight
         c.create_oval(int(cx-r*0.6),int(cy-r*0.6),int(cx+r*0.1),int(cy+r*0.1),fill="#4a4a7a",outline="",stipple="gray50")
 
-        # center icon
-        if self.active:
+        # center icon per phase
+        if p=="executing":
             for i in range(4):
                 a=(self.pulse*3+i*1.57)%6.283
                 dx=math.cos(a)*r*.35; dy=math.sin(a)*r*.35; sz=3
                 c.create_oval(cx+dx-sz,cy+dy-sz,cx+dx+sz,cy+dy+sz,fill="#e0e0ff",outline="")
-        elif self.thinking:
+        elif p=="thinking":
             ps=(math.sin(self.pulse*2)+1)/2; sz=4+ps*3
             c.create_oval(cx-sz,cy-sz,cx+sz,cy+sz,fill=T.AMBER2,outline="")
+        elif p=="waiting":
+            # pulsing exclamation mark
+            ps=(math.sin(self.pulse*3)+1)/2; fs=14+int(ps*4)
+            c.create_text(cx,cy,text="!",fill="#ffffff",font=("Segoe UI",fs,"bold"))
         else:
             c.create_oval(cx-7,cy-7,cx+7,cy+7,fill="",outline="#a0a0c0",width=2)
 
         # badge
         if self.tc>0:
             bx,by=cx+r-2,cy-r-2; br=11
-            c.create_oval(bx-br-3,by-br-3,bx+br+3,by+br+3,fill=T.RED,outline="",stipple="gray50")
-            c.create_oval(bx-br,by-br,bx+br,by+br,fill=T.RED,outline="#aaaaaa",width=1)
+            bc2=T.RED if p=="waiting" else T.RED
+            c.create_oval(bx-br-3,by-br-3,bx+br+3,by+br+3,fill=bc2,outline="",stipple="gray50")
+            c.create_oval(bx-br,by-br,bx+br,by+br,fill=bc2,outline="#aaaaaa",width=1)
             txt=str(self.tc) if self.tc<100 else "99"; fs=9 if len(txt)<=1 else 8
             c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
 
@@ -254,15 +260,16 @@ class App:
         self._rrect(c,pad,pad,w-pad,h-pad,18,fill=T.CARD,outline=T.BORDER,width=1)
 
         # header
-        hy=pad+16
-        if self.active: dot,dc,title="\u25cf",T.GREEN,"Active"
-        elif self.thinking: dot,dc,title="\u25cf",T.AMBER,"Thinking"
+        hy=pad+16; p=self.phase
+        if p=="executing": dot,dc,title="\u25cf",T.GREEN,"Active"
+        elif p=="thinking": dot,dc,title="\u25cf",T.AMBER,"Thinking"
+        elif p=="waiting": dot,dc,title="\u25cf",T.RED,"Waiting for you"
         else: dot,dc,title="\u25cb",T.MUTED,"Idle"
         c.create_text(pad+22,hy,text=dot,fill=dc,font=("Segoe UI",12),anchor="w")
         nproj=len(self.projects or {})
         if nproj>1: title+=f" \u2014 {nproj} projects"
         c.create_text(pad+44,hy,text=title,fill=T.TEXT,font=("Segoe UI",13,"bold"),anchor="w")
-        c.create_text(w-pad-16,hy,text=f"{self.tc} active" if self.active else str(self.task_count),fill=T.MUTED,font=("Segoe UI",10),anchor="e")
+        c.create_text(w-pad-16,hy,text=f"{self.tc} active" if self.phase in ("executing","waiting") else str(self.task_count),fill=T.MUTED,font=("Segoe UI",10),anchor="e")
         dy=hy+16; c.create_line(pad+16,dy,w-pad-16,dy,fill=T.BORDER,width=1)
 
         ly=dy+12; projs=self.projects or {}

@@ -59,6 +59,11 @@ let activeTools = [];
 let currentSession = null;
 let serverStarted = false;
 
+// Phase tracking — deterministic, hook-driven
+let _thinking = false;
+let waitingForUser = false;
+let currentPhase = "idle";
+
 // sessionID → { agent, taskCount, firstSeen, lastActivity }
 const sessions = {};
 
@@ -77,7 +82,20 @@ function buildState() {
   }
 
   // 2. Dynamic toolCount from activeTools
-  const runningCount = activeTools.filter((t) => t.status === "running").length;
+  const runningTools = activeTools.filter((t) => t.status === "running");
+  const runningCount = runningTools.length;
+
+  // 2b. Phase determination (priority: waiting > executing > thinking > idle)
+  const hasQuestion = runningTools.some((t) => t.tool === "question");
+  if (waitingForUser || hasQuestion) {
+    currentPhase = "waiting";
+  } else if (runningCount > 0) {
+    currentPhase = "executing";
+  } else if (_thinking) {
+    currentPhase = "thinking";
+  } else {
+    currentPhase = "idle";
+  }
 
   // 3. Session cleanup — no running tools + >10min since lastActivity → delete
   for (const [sid, info] of Object.entries(sessions)) {
@@ -135,6 +153,8 @@ function buildState() {
 
   return {
     active: runningCount > 0,
+    phase: currentPhase,
+    waitingForUser,
     taskCount,
     toolCount: runningCount,
     sessions: sessionEntries,
@@ -208,6 +228,8 @@ export const ProgressFloatPlugin = async ({ directory }) => {
 
   return {
     "chat.message": async (input) => {
+      _thinking = true;
+      waitingForUser = false;
       taskCount++;
       currentSession = input.sessionID;
       const sid = input.sessionID;
@@ -228,6 +250,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
     },
 
     "tool.execute.before": async (input) => {
+      waitingForUser = false;
       const sid = input.sessionID;
       if (!sessions[sid]) {
         sessions[sid] = {
@@ -260,16 +283,23 @@ export const ProgressFloatPlugin = async ({ directory }) => {
       if (sessions[input.sessionID]) {
         sessions[input.sessionID].lastActivity = new Date().toISOString();
       }
+      // If no more running tools, model is processing result → thinking
+      const stillRunning = activeTools.filter((t) => t.status === "running");
+      if (stillRunning.length === 0) {
+        _thinking = true;
+      }
       writeState();
       scheduleReport();
     },
 
     "experimental.text.complete": async (_input) => {
+      _thinking = false;
       writeState();
       scheduleReport();
     },
 
     "permission.ask": async (_input) => {
+      waitingForUser = true;
       writeState();
       scheduleReport();
     },

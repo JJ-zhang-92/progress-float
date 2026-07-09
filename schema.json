@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ProgressFloat State Schema v2",
+  "title": "ProgressFloat State Schema v3",
   "description": "Single source of truth for all data contracts between plugin, server, and widget.",
   "definitions": {
     "ToolEntry": {
@@ -20,6 +20,10 @@
       "type": "object",
       "properties": {
         "agent": { "type": "string" },
+        "projectName": { "type": "string" },
+        "status": { "type": "string", "enum": ["executing", "thinking", "idle", "waiting"] },
+        "activity": { "type": "string" },
+        "runningDescriptions": { "type": "array", "items": { "type": "string" } },
         "taskCount": { "type": "integer" },
         "toolCount": { "type": "integer" },
         "runningCount": { "type": "integer" },
@@ -43,10 +47,12 @@
   "type": "object",
   "properties": {
     "active": { "type": "boolean", "description": "Any running tools across all projects?" },
+    "phase": { "type": "string", "enum": ["executing", "thinking", "idle", "waiting"], "description": "Current agent phase (hook-driven, deterministic)" },
+    "waitingForUser": { "type": "boolean", "description": "Agent blocked waiting for user input (permission/question)" },
     "toolCount": { "type": "integer", "description": "Total running tools across all projects" },
     "taskCount": { "type": "integer", "description": "Total task count" },
     "projects": { "type": "object", "additionalProperties": { "$ref": "#/definitions/ProjectEntry" } },
     "lastUpdated": { "type": "string", "format": "date-time" }
   },
-  "required": ["active", "toolCount", "taskCount", "projects", "lastUpdated"]
+  "required": ["active", "phase", "toolCount", "taskCount", "projects", "lastUpdated"]
 }
