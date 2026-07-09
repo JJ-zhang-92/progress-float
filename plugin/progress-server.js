@@ -9,13 +9,27 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.argv[2]) || 19822;
-const CACHE_DIR = process.argv[3] || join(__dirname, "..", "..", "cache");
-const PARENT_PID = parseInt(process.argv[4]) || 0;
+const configPath = join(__dirname, "..", "config.json");
+let config = { port: 19822, cacheDir: "", reportTtlMs: 30000 };
+try {
+  if (existsSync(configPath)) config = { ...config, ...JSON.parse(readFileSync(configPath, "utf8")) };
+} catch {}
+const PORT = parseInt(process.argv[2]) || config.port;
+const CACHE_DIR = process.argv[3] || resolveCacheDir(config.cacheDir);
+const TTL_MS = config.reportTtlMs;
+
+function resolveCacheDir(cacheDir) {
+  if (cacheDir) {
+    if (cacheDir.includes(":") || cacheDir.startsWith("/")) return cacheDir;
+    return join(__dirname, "..", cacheDir);
+  }
+  return join(__dirname, "..", "..", "cache");
+}
+
+const pythonCmd = process.platform === "win32" ? "pythonw" : "python3";
 const STATE_FILE = join(CACHE_DIR, "progress-state.json");
-const HTML_FILE = join(__dirname, "..", "..", "progress-widget.html");
-const WIDGET_SCRIPT = join(__dirname, "..", "..", "progress-float.pyw");
-const TTL_MS = 30000;
+const HTML_FILE = join(__dirname, "..", "widget", "progress-widget.html");
+const WIDGET_SCRIPT = join(__dirname, "..", "widget", "progress-float.pyw");
 
 // In-memory project aggregation
 const projects = new Map();
@@ -26,16 +40,6 @@ function readLocalState() {
     return JSON.parse(readFileSync(STATE_FILE, "utf8"));
   } catch {
     return null;
-  }
-}
-
-function isParentAlive() {
-  if (!PARENT_PID) return true; // no PID passed → assume alive (backward compat)
-  try {
-    process.kill(PARENT_PID, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -97,8 +101,6 @@ function aggregateState() {
 // Auto-launch widget
 let widgetLaunched = false;
 let launchDebounce = null;
-let idleTicks = 0;
-
 function tryLaunchWidget() {
   if (widgetLaunched) return;
   const state = aggregateState();
@@ -108,8 +110,8 @@ function tryLaunchWidget() {
       const s2 = aggregateState();
       if (s2.toolCount > 0 || s2.active) {
         widgetLaunched = true;
-        spawn("pythonw", [WIDGET_SCRIPT], {
-          detached: true, stdio: "ignore", windowsHide: true,
+        spawn(pythonCmd, [WIDGET_SCRIPT], {
+          detached: true, stdio: "ignore", ...(process.platform === "win32" ? { windowsHide: true } : {}),
         }).unref();
       }
     }, 2000);
@@ -142,24 +144,12 @@ function setupWatcher() {
   } catch { /* fallback to polling */ }
   // Post-report-driven: also broadcast periodically to push SSE and clean TTL
   pollTimer = setInterval(() => {
-    // Parent process check — exit if OpenCode/plugin is gone
-    if (!isParentAlive()) {
-      clearInterval(pollTimer);
-      server.close();
-      process.exit(0);
+    // Cleanup dead SSE clients (write failed = client gone)
+    for (const res of clients) {
+      try { res.write(": keepalive\n\n"); } catch { clients.delete(res); }
     }
     broadcast();
     tryLaunchWidget();
-    if (projects.size === 0 && clients.size === 0) {
-      idleTicks++;
-      if (idleTicks > 150) {
-        clearInterval(pollTimer);
-        server.close();
-        process.exit(0);
-      }
-    } else {
-      idleTicks = 0;
-    }
   }, 2000);
 }
 
@@ -195,7 +185,6 @@ const server = createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       projects.set(project, { state: body, lastSeen: Date.now() });
-      idleTicks = 0;
       broadcast();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, projects: projects.size }));
@@ -221,7 +210,6 @@ const server = createServer(async (req, res) => {
       Connection: "keep-alive",
     });
     res.write(`data: ${JSON.stringify(aggregateState())}\n\n`);
-    idleTicks = 0;
     clients.add(res);
     req.on("close", () => clients.delete(res));
     return;

@@ -2,10 +2,30 @@
 State machine: GREEN(active) → AMBER(thinking 8s) → GRAY(idle)"""
 
 import tkinter as tk
-import threading, json, time, math, sys, os, atexit, ctypes, subprocess
+import threading, time, math, sys, os, atexit, ctypes, subprocess
+import json as _json
 import urllib.request, urllib.error
 
-PORT = 19822
+# Config from config.json
+_config = {"port":19822,"cacheDir":"","thinkingTimeoutS":8,"staleThresholdS":60,"heartbeatThresholdS":15}
+try:
+    _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json")
+    if os.path.exists(_cfg_path):
+        with open(_cfg_path) as _f:
+            _config.update(_json.load(_f))
+except: pass
+
+def _resolve_cache_dir():
+    if sys.platform == "win32":
+        _base = os.environ.get("APPDATA") or os.path.join(os.environ.get("USERPROFILE",""), "AppData", "Roaming")
+        return os.path.join(_base, "progress-float")
+    return os.path.join(os.environ.get("HOME",""), ".progress-float")
+
+PORT = _config["port"]
+CACHE_DIR = _config["cacheDir"] or _resolve_cache_dir()
+THINKING_TIMEOUT = _config["thinkingTimeoutS"]
+STALE_THRESHOLD = _config["staleThresholdS"]
+HEARTBEAT_THRESHOLD = _config["heartbeatThresholdS"]
 API = f"http://127.0.0.1:{PORT}/state"
 LOCK_FILE = os.path.join(os.environ.get("TEMP","."), "opencode-progress-float.pid")
 
@@ -15,9 +35,12 @@ def _singleton():
         try:
             with open(LOCK_FILE) as f:
                 pid = int(f.read().strip())
-            import ctypes
-            h = ctypes.windll.kernel32.OpenProcess(0x0400, False, pid)
-            if h: ctypes.windll.kernel32.CloseHandle(h); return True
+            if sys.platform == "win32":
+                h = ctypes.windll.kernel32.OpenProcess(0x0400, False, pid)
+                if h: ctypes.windll.kernel32.CloseHandle(h); return True
+            else:
+                try: os.kill(pid, 0); return True
+                except OSError: pass
         except: pass
     with open(LOCK_FILE,"w") as f: f.write(str(os.getpid()))
     atexit.register(lambda: os.path.exists(LOCK_FILE) and os.remove(LOCK_FILE))
@@ -25,32 +48,29 @@ def _singleton():
 if _singleton(): sys.exit(0)
 
 def _is_opencode_running():
-    """Check if OpenCode is alive via state file freshness. No external heartbeat needed."""
-    # 1. Heartbeat file — authoritative when it exists
-    hb = "C:/.opencode/cache/heartbeat"
+    hb = os.path.join(CACHE_DIR, "heartbeat")
+    sf = os.path.join(CACHE_DIR, "progress-state.json")
     try:
         if os.path.exists(hb):
-            return (time.time() - os.path.getmtime(hb)) < 15
-    except:
-        pass
-    # 2. State file freshness — if plugin writes it, it stops when OpenCode dies
-    sf = "C:/.opencode/cache/progress-state.json"
+            return (time.time() - os.path.getmtime(hb)) < HEARTBEAT_THRESHOLD
+    except: pass
     try:
         if os.path.exists(sf):
-            age = time.time() - os.path.getmtime(sf)
-            return age < 60  # 60s stale = OpenCode dead
-    except:
-        pass
-    # 3. Last resort: tasklist subprocess check
-    try:
-        r = subprocess.run(
-            ['tasklist', '/fi', 'imagename eq OpenCode.exe', '/fo', 'csv', '/nh'],
-            capture_output=True, text=True, timeout=3,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-        )
-        return 'OpenCode.exe' in r.stdout or 'opencode.exe' in r.stdout.lower()
-    except:
-        return True
+            return (time.time() - os.path.getmtime(sf)) < STALE_THRESHOLD
+    except: pass
+    if sys.platform == "win32":
+        try:
+            r = subprocess.run(['tasklist','/fi','imagename eq OpenCode.exe','/fo','csv','/nh'],
+                capture_output=True,text=True,timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            return 'OpenCode.exe' in r.stdout or 'opencode.exe' in r.stdout.lower()
+        except: pass
+    else:
+        try:
+            r = subprocess.run(['pgrep','-x','OpenCode'], capture_output=True,text=True,timeout=3)
+            return r.returncode == 0
+        except: pass
+    return True
 
 # ── Theme ──
 class T:
@@ -120,18 +140,25 @@ class App:
             try:
                 req=urllib.request.Request(API)
                 with urllib.request.urlopen(req,timeout=3) as r:
-                    d=json.loads(r.read().decode())
+                    d=_json.loads(r.read().decode())
                 self.tc=d.get("toolCount",0)
-                self.tools=d.get("activeTools",[])
+                self.tools=d.get("activeTools",[])  # backward compat
                 self.sessions=d.get("sessions",{})
                 self.projects=d.get("projects",{})
+                # If projects exist and have tools, prefer those for tool count
+                if self.projects:
+                    tmp = []
+                    for p in self.projects.values():
+                        tmp.extend(p.get("activeTools", []))
+                    self.tools = tmp
                 self.task_count=d.get("taskCount",0)
+                self.last_updated = d.get("lastUpdated", "")
                 svr_a=d.get("active",False) or self.tc>0
                 if svr_a:
                     self.active=True; self.thinking=False; self._la=time.time()
                 elif self.tc==0 and self._la>0:
                     e=time.time()-self._la
-                    if e<8: self.thinking=True; self.active=False
+                    if e<THINKING_TIMEOUT: self.thinking=True; self.active=False
                     else: self.thinking=False; self.active=False
             except Exception:
                 pass
@@ -246,7 +273,7 @@ class App:
         if len(projs)>1:
             for pn in sorted(projs):
                 p=projs[pn]
-                groups.append(("project",pn,p.get("active",False),p.get("toolCount",0),p.get("taskCount",0),p.get("activeTools",[]),p.get("sessions",{})))
+                groups.append(("project",pn,p.get("active",False),p.get("toolCount",0),p.get("taskCount",0),p.get("activeTools",[]),p.get("sessions",{}),pn,"","",[]))
         elif len(projs)==1:
             pn,p=next(iter(projs.items()))
             ss=p.get("sessions",{}) or self.sessions
@@ -254,41 +281,64 @@ class App:
             if ss:
                 for sid,si in sorted(ss.items(),key=lambda kv:kv[1].get("runningCount",0),reverse=True):
                     a=si.get("agent","?"); st=[t for t in pt if t.get("sessionID")==sid]
-                    groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{}))
+                    pname=si.get("projectName","")
+                    stat=si.get("status","idle")
+                    act=si.get("activity","Idle")
+                    rdescs=si.get("runningDescriptions",[])
+                    groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{},pname,stat,act,rdescs))
             elif pt:
                 groups=self._fallback(pt)
         elif self.sessions:
             for sid,si in sorted(self.sessions.items(),key=lambda kv:kv[1].get("runningCount",0),reverse=True):
                 a=si.get("agent","?"); st=[t for t in tools if t.get("sessionID")==sid]
-                groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{}))
+                pname=si.get("projectName","")
+                stat=si.get("status","idle")
+                act=si.get("activity","Idle")
+                rdescs=si.get("runningDescriptions",[])
+                groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{},pname,stat,act,rdescs))
         else:
             groups=self._fallback(tools)
 
         if not groups:
             c.create_text(w//2,ly+60,text="Waiting for tasks...",fill=T.MUTED,font=("Segoe UI",11))
         else:
-            ch=84
-            for kind,label,is_a,run,total,tasks,gt in groups:
+            ch=106
+            for kind,label,is_a,run,total,tasks,gt,_,pname,stat,act,rdescs in groups:
                 if ly+ch>h-pad-40: break
                 lc=CAT_COLORS.get(label,T.ACCENT2 if kind=="project" else "#7c3aed")
                 self._rrect(c,pad+6,ly,w-pad-6,ly+ch-4,10,fill="#1a1a30",outline="#2a2a55",width=1)
+                # badge row
                 bw=max(60,len(label)*9+20)
                 self._rrect(c,pad+20,ly+6,pad+20+bw,ly+24,6,fill=lc+"44",outline=lc+"88",width=1)
                 c.create_text(pad+20+bw//2,ly+15,text=label,fill=lc,font=("Segoe UI",10,"bold"))
                 if kind=="project":
                     c.create_text(pad+20+bw+8,ly+15,text="project",fill=T.MUTED,font=("Segoe UI",8),anchor="w")
+                elif pname:
+                    c.create_text(pad+20+bw+8,ly+15,text="@"+pname,fill=T.MUTED,font=("Segoe UI",8),anchor="w")
+                # activity description
+                icon={"executing":"\u25b6","thinking":"\u25d0","idle":"\u25cb"}.get(stat,"\u25cb")
+                icon_c={"executing":T.GREEN,"thinking":T.AMBER,"idle":T.MUTED}.get(stat,T.MUTED)
+                c.create_text(pad+28,ly+34,text=icon,fill=icon_c,font=("Segoe UI",8),anchor="w")
+                c.create_text(pad+44,ly+34,text=act,fill=T.TEXT,font=("Segoe UI",9),anchor="w")
+                # sub-item: running tool details
+                sub_y=ly+52
+                if rdescs:
+                    first_desc=rdescs[0] if rdescs else ""
+                    if len(rdescs)>1: first_desc+=f" +{len(rdescs)-1} more"
+                    c.create_text(pad+44,sub_y,text=first_desc,fill=T.MUTED,font=("Segoe UI",8),anchor="w")
+                # stats row
                 dot="\u25cf" if (is_a or run>0) else "\u25cb"
                 dc2=T.GREEN if (is_a or run>0) else T.MUTED
-                c.create_text(pad+28,ly+38,text=dot,fill=dc2,font=("Segoe UI",9),anchor="w")
-                c.create_text(pad+48,ly+38,text=f"{run}/{total} tools",fill=T.MUTED,font=("Segoe UI",9),anchor="w")
-                c.create_text(w-pad-22,ly+38,text=f"{tasks} tasks",fill=T.MUTED,font=("Segoe UI",9),anchor="e")
+                c.create_text(pad+28,ly+70,text=dot,fill=dc2,font=("Segoe UI",9),anchor="w")
+                c.create_text(pad+48,ly+70,text=f"{run}/{total} tools",fill=T.MUTED,font=("Segoe UI",9),anchor="w")
+                c.create_text(w-pad-22,ly+70,text=f"{tasks} tasks",fill=T.MUTED,font=("Segoe UI",9),anchor="e")
                 # dot bar
                 dx=pad+24; max_d=(w-pad*2-50)//11; sh=0
                 for t in gt[-max_d:]:
-                    if sh>=max_d: c.create_text(dx+4,ly+60,text=f"+{len(gt)-sh}",fill=T.MUTED,font=("Segoe UI",8)); break
+                    if sh>=max_d: c.create_text(dx+4,ly+86,text=f"+{len(gt)-sh}",fill=T.MUTED,font=("Segoe UI",8)); break
                     st=t.get("status",""); dc3=T.GREEN if st=="running" else T.DONE_CLR
                     tc2=CAT_COLORS.get(t.get("tool",""),T.MUTED)
-                    c.create_oval(dx,ly+56,dx+8,ly+64,fill=tc2,outline=dc3,width=1)
+                    c.create_oval(dx,ly+82,dx+8,ly+90,fill=tc2,outline=dc3,width=1)
                     dx+=11; sh+=1
                 ly+=ch+4
 
@@ -306,7 +356,7 @@ class App:
             ba.setdefault(a,[]).append(t)
         for a,at in sorted(ba.items(),key=lambda kv:sum(1 for t in kv[1] if t.get("status")=="running"),reverse=True):
             rn=sum(1 for t in at if t.get("status")=="running")
-            g.append(("agent",a,rn>0,rn,len(at),self.task_count,at))
+            g.append(("agent",a,rn>0,rn,len(at),self.task_count,at,{},"","idle" if rn==0 else "executing","Idle" if rn==0 else f"{at[0].get('tool','?')}",[]))
         return g
 
     def _hide_panel(self):

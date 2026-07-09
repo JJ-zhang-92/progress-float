@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgressFloat State Schema v2",
+  "description": "Single source of truth for all data contracts between plugin, server, and widget.",
+  "definitions": {
+    "ToolEntry": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string", "enum": ["bash","read","write","edit","grep","glob","task","webfetch","question","todowrite","skill","other"] },
+        "status": { "type": "string", "enum": ["running", "done"] },
+        "sessionID": { "type": "string" },
+        "agent": { "type": "string" },
+        "callID": { "type": "string" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tool", "status", "sessionID", "agent", "callID", "startedAt"]
+    },
+    "SessionEntry": {
+      "type": "object",
+      "properties": {
+        "agent": { "type": "string" },
+        "taskCount": { "type": "integer" },
+        "toolCount": { "type": "integer" },
+        "runningCount": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "firstSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["agent", "taskCount", "toolCount", "runningCount", "active"]
+    },
+    "ProjectEntry": {
+      "type": "object",
+      "properties": {
+        "active": { "type": "boolean" },
+        "toolCount": { "type": "integer" },
+        "taskCount": { "type": "integer" },
+        "sessions": { "type": "object", "additionalProperties": { "$ref": "#/definitions/SessionEntry" } },
+        "activeTools": { "type": "array", "items": { "$ref": "#/definitions/ToolEntry" } },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "type": "object",
+  "properties": {
+    "active": { "type": "boolean", "description": "Any running tools across all projects?" },
+    "toolCount": { "type": "integer", "description": "Total running tools across all projects" },
+    "taskCount": { "type": "integer", "description": "Total task count" },
+    "projects": { "type": "object", "additionalProperties": { "$ref": "#/definitions/ProjectEntry" } },
+    "lastUpdated": { "type": "string", "format": "date-time" }
+  },
+  "required": ["active", "toolCount", "taskCount", "projects", "lastUpdated"]
+}

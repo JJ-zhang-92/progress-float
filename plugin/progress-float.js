@@ -3,17 +3,34 @@
 // Reports state to the aggregation server via HTTP POST.
 // Built-in cleanup: 120s tool timeout, 10min session TTL, dynamic count.
 
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { request } from "node:http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = 19822;
-const CACHE_DIR = join(__dirname, "..", "..", "cache");
-const TOOL_TIMEOUT_MS = 120_000;
-const SESSION_TTL_MS = 600_000;
+
+// Read config.json (optional, falls back to defaults)
+const configPath = join(__dirname, "..", "config.json");
+let config = { port: 19822, cacheDir: "", toolTimeoutMs: 120000, sessionTtlMs: 600000, reportTtlMs: 30000 };
+try {
+  if (existsSync(configPath)) config = { ...config, ...JSON.parse(readFileSync(configPath, "utf8")) };
+} catch {}
+
+function resolveCacheDir(preferred) {
+  if (preferred) return preferred;
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || join(process.env.USERPROFILE || ".", "AppData", "Roaming");
+    return join(appData, "progress-float");
+  }
+  return join(process.env.HOME || ".", ".progress-float");
+}
+
+const PORT = config.port;
+const CACHE_DIR = resolveCacheDir(config.cacheDir);
+const TOOL_TIMEOUT_MS = config.toolTimeoutMs;
+const SESSION_TTL_MS = config.sessionTtlMs;
 
 function ensureCacheDir() {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
@@ -22,6 +39,20 @@ function ensureCacheDir() {
 function statePath() {
   return join(CACHE_DIR, "progress-state.json");
 }
+
+const TOOL_LABELS = {
+  bash: "Running shell command",
+  read: "Reading file",
+  write: "Writing file",
+  edit: "Editing code",
+  grep: "Searching codebase",
+  glob: "Finding files",
+  task: "Delegating to sub-agent",
+  webfetch: "Fetching web page",
+  question: "Asking for clarification",
+  todowrite: "Updating task list",
+  skill: "Loading skill",
+};
 
 let taskCount = 0;
 let activeTools = [];
@@ -61,13 +92,39 @@ function buildState() {
     }
   }
 
+  // 3b. Trim activeTools to prevent unbounded growth
+  if (activeTools.length > 200) {
+    activeTools.splice(0, activeTools.length - 100);
+  }
+
   // 4. Build session entries
   const sessionEntries = {};
   for (const [sid, info] of Object.entries(sessions)) {
     const sessionTools = activeTools.filter((t) => t.sessionID === sid);
     const sessionRunning = sessionTools.filter((t) => t.status === "running");
+    const now = Date.now();
+    const lastActive = new Date(info.lastActivity || info.firstSeen).getTime();
+
+    // Status + activity determination
+    let status, activity;
+    const runningDescs = sessionRunning.map((t) => TOOL_LABELS[t.tool] || `Running ${t.tool}`);
+    if (sessionRunning.length > 0) {
+      status = "executing";
+      activity = runningDescs.join(" / ");
+    } else if (now - lastActive < 8000) {
+      status = "thinking";
+      activity = "Thinking...";
+    } else {
+      status = "idle";
+      activity = "Idle";
+    }
+
     sessionEntries[sid] = {
       agent: info.agent,
+      projectName: projectName,
+      status,
+      activity,
+      runningDescriptions: runningDescs,
       taskCount: info.taskCount,
       toolCount: sessionTools.length,
       runningCount: sessionRunning.length,
