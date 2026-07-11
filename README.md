@@ -86,13 +86,13 @@ progress-float/
 │   ├── progress-float.js      # OpenCode plugin (~305 lines)
 │   └── progress-server.js     # HTTP aggregation server (~275 lines)
 ├── widget/
-│   ├── progress-float.pyw     # Python tkinter widget (~510 lines)
+│   ├── progress-float.pyw     # Python tkinter widget (~530 lines)
 │   ├── progress-widget.html   # HTML alternative (~280 lines)
 │   └── sprites/
-│       ├── working.png        # Executing phase sprite
-│       ├── thinking.png       # Thinking phase sprite
-│       ├── idle.png           # Idle phase sprite
-│       └── alert.png          # Waiting phase sprite
+│       ├── chibi/              # Chibi sprite skin (4 PNGs)
+│       ├── cn3d-1/             # 动漫3D variant 1 (4 PNGs)
+│       ├── cn3d-2/             # 动漫3D variant 2 (4 PNGs)
+│       └── cn3d-3/             # 动漫3D variant 3 (4 PNGs)
 ├── launcher/
 │   └── progress-launcher.ps1  # PowerShell one-click launcher
 ├── config.json                # Unified configuration
@@ -158,8 +158,8 @@ All in `config.json` / 统一在 `config.json`：
 | Action / 操作 | Result / 效果 |
 |--------|--------|
 | Left-click · 左键 | Toggle detail panel · 切换面板 |
-| Right-click → Appearance → Ball · 右键→外观→悬浮球 | Classic ball mode · 经典球模式 |
-| Right-click → Appearance → Sprite · 右键→外观→精灵 | Chibi sprite mode · Q版精灵模式 |
+| Right-click → Appearance → Classic Ball | Classic ball mode · 经典球模式 |
+| Right-click → Appearance → chibi/cn3d-1/cn3d-2/cn3d-3 | Sprite skin · 精灵皮肤 |
 | Right-click → Exit · 右键→退出 | Close widget + server |
 | Drag · 拖拽 | Reposition anywhere · 任意位置 |
 
