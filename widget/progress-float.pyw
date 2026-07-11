@@ -161,6 +161,7 @@ class App:
         self._hdc_src = None
         self._hbmp = None
         self._pbits = None
+        self._sprite_win = None
 
         threading.Thread(target=self._poll,daemon=True).start()
         self._anim()
@@ -207,17 +208,19 @@ class App:
         if self.skin in self.sprites:
             if not self._is_layered:
                 self._init_layered()
-                self.canvas.config(width=0, height=0)
-                self.root.geometry(f"{SC}x{SC}")
+                self.root.withdraw()
+            # sync sprite window position to root
+            if self._sprite_win:
+                rx = self.root.winfo_x(); ry = self.root.winfo_y()
+                self._sprite_win.geometry(f"+{rx}+{ry}")
             frame = self._render_sprite_frame(p)
             self._blit_layered(frame)
             return
 
-        # Classic ball: ensure canvas is visible
+        # Classic ball: ensure root visible, canvas active
         if self._is_layered:
             self._teardown_layered()
-            self.canvas.config(width=CW, height=CH)
-            self.canvas.pack()
+            self.root.deiconify()
         c=self.canvas; c.delete("all")
         cx, cy = CW//2, CH//2
         self._draw_ball(c, cx, cy, BR, p)
@@ -272,21 +275,29 @@ class App:
 
     # ── Layered window rendering (sprite silhouette) ──
     def _init_layered(self):
-        """Set WS_EX_LAYERED on window, create persistent DIB section."""
-        hwnd = int(self.root.frame(), 16)
+        """Create a separate Toplevel as layered window for sprite rendering."""
+        if self._sprite_win:
+            return
+        self._sprite_win = tk.Toplevel(self.root)
+        self._sprite_win.overrideredirect(True)
+        self._sprite_win.attributes("-topmost", True)
+        self._sprite_win.configure(bg="#000000")
+        x = self.root.winfo_x(); y = self.root.winfo_y()
+        self._sprite_win.geometry(f"{SC}x{SC}+{x}+{y}")
+        self._sprite_win.withdraw()  # hide until first blit
+        hwnd = int(self._sprite_win.frame(), 16)
         ex = _ct.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         _ct.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
         _ct.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
-        # Screen DC (cached)
+        # Screen DC and DIB (cached)
         if not self._hdc_screen:
             self._hdc_screen = _ct.windll.user32.GetDC(0)
             self._hdc_src = _ct.windll.gdi32.CreateCompatibleDC(self._hdc_screen)
-        # Create DIB for SC×SC 32-bit top-down BGRA
         bmi = _BITMAPINFO()
         bmi.bmiHeader.biSize = _ct.sizeof(_BITMAPINFOHEADER)
         bmi.bmiHeader.biWidth = SC
-        bmi.bmiHeader.biHeight = -SC  # top-down
+        bmi.bmiHeader.biHeight = -SC
         bmi.bmiHeader.biPlanes = 1
         bmi.bmiHeader.biBitCount = 32
         bmi.bmiHeader.biCompression = 0
@@ -297,17 +308,17 @@ class App:
         self._is_layered = True
 
     def _teardown_layered(self):
-        """Remove WS_EX_LAYERED, release DIB."""
+        """Destroy sprite window and release DIB."""
         if self._hbmp:
             _ct.windll.gdi32.DeleteObject(self._hbmp); self._hbmp = None
         if self._hdc_src:
             _ct.windll.gdi32.DeleteDC(self._hdc_src); self._hdc_src = None
         if self._hdc_screen:
             _ct.windll.user32.ReleaseDC(0, self._hdc_screen); self._hdc_screen = None
-        hwnd = int(self.root.frame(), 16)
-        ex = _ct.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        _ct.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED)
-        _ct.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE)
+        if self._sprite_win:
+            try: self._sprite_win.destroy()
+            except: pass
+        self._sprite_win = None
         self._is_layered = False
 
     def _render_sprite_frame(self, p):
@@ -382,18 +393,19 @@ class App:
                 draw.text((z["x"], z["y"]), "z", fill=(0x6b, 0x6b, 0x8a), font=font, anchor="mt")
 
     def _blit_layered(self, img):
-        """Blit PIL RGBA image to layered window via UpdateLayeredWindow."""
-        if not self._is_layered or not self._pbits:
+        """Blit PIL RGBA image to sprite window via UpdateLayeredWindow."""
+        if not self._is_layered or not self._pbits or not self._sprite_win:
             return
         bgra = img.tobytes("raw", "BGRA")
         _ct.memmove(self._pbits, bgra, len(bgra))
-        hwnd = int(self.root.frame(), 16)
-        bf = _BLENDFUNC(0, 0, 255, 1)  # AC_SRC_ALPHA
+        hwnd = int(self._sprite_win.frame(), 16)
+        bf = _BLENDFUNC(0, 0, 255, 1)
         _ct.windll.user32.UpdateLayeredWindow(
             hwnd, self._hdc_screen, None,
             _ct.byref(_w.SIZE(SC, SC)),
             self._hdc_src, _ct.byref(_w.POINT(0, 0)), 0,
             _ct.byref(bf), ULW_ALPHA)
+        self._sprite_win.deiconify()  # show after first blit
 
     def _anim(self):
         self.pulse += 0.05
@@ -595,13 +607,12 @@ class App:
         self.skin = skin
         self._skin_var.set(skin)
         if skin in self.sprites:
-            # Sprite mode: layered window silhouette
             w = h = SC
+            # hide root in sprite mode — _draw will create sprite_win
         else:
-            # Ball mode: canvas
             if self._is_layered:
                 self._teardown_layered()
-                self.canvas.pack()
+            self.root.deiconify()
             w = CW; h = CH
         self.canvas.config(width=w, height=h)
         self.root.geometry(f"{w}x{h}")
@@ -613,6 +624,8 @@ class App:
         x=self.root.winfo_x()+e.x-w//2
         y=self.root.winfo_y()+e.y-h//2
         self.root.geometry(f"+{x}+{y}")
+        if self._sprite_win:
+            self._sprite_win.geometry(f"+{x}+{y}")
         if self.popen and self.panel:
             self.panel.geometry(f"+{max(0,x-PW+w)}+{max(0,y-PH-12)}")
 
