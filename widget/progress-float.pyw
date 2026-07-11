@@ -101,8 +101,8 @@ CAT_ICONS={
 }
 
 BR=30; CW,CH=120,120; PW,PH=320,400
-SR=55; SC=140  # sprite radius, sprite canvas size
-FEATHER=10
+SR=55; SC=200  # sprite radius, sprite canvas size
+FEATHER=14
 
 def _load_sprites(size=110, feather=10):
     """Load PNG sprites, resize and apply radial-gradient circular mask. Returns {phase: PhotoImage}."""
@@ -155,7 +155,7 @@ class App:
         # sprite mode
         self.sprite_mode = False
         self._skin_var = tk.StringVar(value="ball")
-        self.sprites = _load_sprites()
+        self.sprites = _load_sprites(170, FEATHER)
         self.zzzs = []         # idle Zzz float particles
         self._decor_timer = 0  # ticks for decor animations
 
