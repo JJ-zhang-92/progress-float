@@ -7,7 +7,7 @@ import tkinter as tk
 import threading, time, math, sys, os, atexit, ctypes, subprocess
 import json as _json
 import urllib.request, urllib.error
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 # Config from config.json
 _config = {"port":19822,"cacheDir":"","thinkingTimeoutS":8,"staleThresholdS":60,"heartbeatThresholdS":15}
@@ -103,28 +103,15 @@ CAT_ICONS={
 BR=30; CW,CH=120,120; PW,PH=320,400
 SR=55; SC=200  # sprite radius, sprite canvas size
 
-# ── Layered window (for sprite silhouette) ──
-import ctypes as _ct; from ctypes import wintypes as _w
-WS_EX_LAYERED = 0x80000; ULW_ALPHA = 0x02
-GWL_EXSTYLE = -20; SWP_FRAMECHANGED = 0x20; SWP_NOMOVE = 0x02; SWP_NOSIZE = 0x01
-class _BLENDFUNC(_ct.Structure):
-    _fields_ = [("BlendOp",_w.BYTE),("BlendFlags",_w.BYTE),("SourceConstantAlpha",_w.BYTE),("AlphaFormat",_w.BYTE)]
-class _BITMAPINFOHEADER(_ct.Structure):
-    _fields_ = [("biSize",_w.DWORD),("biWidth",_w.LONG),("biHeight",_w.LONG),("biPlanes",_w.WORD),("biBitCount",_w.WORD),
-        ("biCompression",_w.DWORD),("biSizeImage",_w.DWORD),("biXPelsPerMeter",_w.LONG),("biYPelsPerMeter",_w.LONG),
-        ("biClrUsed",_w.DWORD),("biClrImportant",_w.DWORD)]
-class _BITMAPINFO(_ct.Structure):
-    _fields_ = [("bmiHeader",_BITMAPINFOHEADER)]
-_FONT_PATH = os.path.join(os.environ.get("WINDIR","C:\\Windows"), "Fonts", "seguiemj.ttf")
-if not os.path.exists(_FONT_PATH): _FONT_PATH = os.path.join(os.environ.get("WINDIR","C:\\Windows"), "Fonts", "seguisym.ttf")
+
 
 def _load_sprites_from(d, size=170):
-    """Load PNG sprites from directory d. Returns {phase: PIL.Image} with original alpha."""
     sprites = {}
     for phase, fn in [("executing","working"), ("thinking","thinking"), ("idle","idle"), ("waiting","alert")]:
         p = os.path.join(d, fn + ".png")
         if not os.path.exists(p): continue
-        sprites[phase] = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
+        img = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
+        sprites[phase] = ImageTk.PhotoImage(img)
     return sprites
 
 class App:
@@ -156,12 +143,7 @@ class App:
             self.sprites[sd] = _load_sprites_from(os.path.join(_SPRITE_DIR, sd), 170)
         self.zzzs = []         # idle Zzz float particles
         self._decor_timer = 0  # ticks for decor animations
-        self._is_layered = False
-        self._hdc_screen = None
-        self._hdc_src = None
-        self._hbmp = None
-        self._pbits = None
-        self._sprite_win = None
+
 
         threading.Thread(target=self._poll,daemon=True).start()
         self._anim()
@@ -203,27 +185,65 @@ class App:
 
     # ── Draw ──
     def _draw(self):
-        p=self.phase
+        c = self.canvas; c.delete("all")
+        p = self.phase
 
         if self.skin in self.sprites:
-            if not self._is_layered:
-                self._init_layered()
-                self.root.withdraw()
-            # sync sprite window position to root
-            if self._sprite_win:
-                rx = self.root.winfo_x(); ry = self.root.winfo_y()
-                self._sprite_win.geometry(f"+{rx}+{ry}")
-            frame = self._render_sprite_frame(p)
-            self._blit_layered(frame)
-            return
-
-        # Classic ball: ensure root visible, canvas active
-        if self._is_layered:
-            self._teardown_layered()
-            self.root.deiconify()
-        c=self.canvas; c.delete("all")
-        cx, cy = CW//2, CH//2
+            spr = self.sprites[self.skin].get(p)
+            if spr:
+                cx, cy = SC // 2, SC // 2; r = SR
+                # glow rings
+                gm = {"executing": (0x34, 0xd3, 0x99), "thinking": (0xf5, 0x9e, 0x0b), "waiting": (0xef, 0x44, 0x44)}
+                if p in gm:
+                    gr, gg, gb = gm[p]
+                    for i in range(3):
+                        pi = (self.pulse + i * 0.33) % 1.0
+                        gr2_ = r + 4 + pi * 18
+                        alpha = int((1 - pi) * 200 + 55)
+                        c.create_oval(cx - gr2_, cy - gr2_, cx + gr2_, cy + gr2_,
+                            outline=f"#{gr:02x}{gg:02x}{min(255, gb + alpha):02x}", width=2)
+                # sprite image
+                c.create_image(cx, cy, image=spr)
+                # decor
+                self._draw_sprite_decor(c, p, cx, cy, r)
+                # badge
+                if self.tc > 0:
+                    bx, by = cx + r - 2, cy - r + 12
+                    c.create_oval(bx - 11, by - 11, bx + 11, by + 11, fill=T.RED, outline="#ffffff", width=1)
+                    txt = str(self.tc) if self.tc < 100 else "99"
+                    fs = 9 if len(txt) <= 1 else 8
+                    c.create_text(bx, by + 1, text=txt, fill="#ffffff", font=("Segoe UI", fs, "bold"))
+                return
+            # fall through if sprite missing for this phase → show ball
+        cx = int(self.canvas['width']) // 2
+        cy = int(self.canvas['height']) // 2
         self._draw_ball(c, cx, cy, BR, p)
+
+    def _draw_sprite_decor(self, c, p, cx, cy, r):
+        """Draw phase-specific decorations on canvas."""
+        if p == "executing":
+            for i in range(4):
+                a = (self.pulse * 3 + i * 1.57) % 6.283
+                dx = math.cos(a) * (r + 10)
+                dy = math.sin(a) * (r + 10)
+                sz = 3
+                c.create_oval(cx + dx - sz, cy + dy - sz, cx + dx + sz, cy + dy + sz,
+                    fill=T.GREEN2, outline="")
+        elif p == "thinking":
+            ps = (math.sin(self.pulse * 2) + 1) / 2
+            fs = 11 + int(ps * 4)
+            c.create_text(cx, cy + r + 12, text="?", fill=T.AMBER2,
+                font=("Segoe UI", fs, "bold"))
+        elif p == "waiting":
+            ps = (math.sin(self.pulse * 3) + 1) / 2
+            fs = 15 + int(ps * 6)
+            c.create_text(cx, cy + r + 10, text="!", fill=T.RED,
+                font=("Segoe UI", fs, "bold"))
+        else:
+            for z in self.zzzs:
+                fs = max(7, 11 - z["age"] // 15)
+                c.create_text(z["x"], z["y"], text="z",
+                    fill=T.MUTED, font=("Segoe UI", fs, "bold"))
 
     # ── Classic ball canvas drawing ──
     def _draw_ball(self, c, cx, cy, r, p):
@@ -273,139 +293,7 @@ class App:
             txt=str(self.tc) if self.tc<100 else "99"; fs=9 if len(txt)<=1 else 8
             c.create_text(bx,by+1,text=txt,fill="#ffffff",font=("Segoe UI",fs,"bold"))
 
-    # ── Layered window rendering (sprite silhouette) ──
-    def _init_layered(self):
-        """Create a separate Toplevel as layered window for sprite rendering."""
-        if self._sprite_win:
-            return
-        self._sprite_win = tk.Toplevel(self.root)
-        self._sprite_win.overrideredirect(True)
-        self._sprite_win.attributes("-topmost", True)
-        self._sprite_win.configure(bg="#000000")
-        x = self.root.winfo_x(); y = self.root.winfo_y()
-        self._sprite_win.geometry(f"{SC}x{SC}+{x}+{y}")
-        self._sprite_win.withdraw()  # hide until first blit
-        hwnd = int(self._sprite_win.frame(), 16)
-        ex = _ct.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        _ct.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-        _ct.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
-        # Screen DC and DIB (cached)
-        if not self._hdc_screen:
-            self._hdc_screen = _ct.windll.user32.GetDC(0)
-            self._hdc_src = _ct.windll.gdi32.CreateCompatibleDC(self._hdc_screen)
-        bmi = _BITMAPINFO()
-        bmi.bmiHeader.biSize = _ct.sizeof(_BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = SC
-        bmi.bmiHeader.biHeight = -SC
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 32
-        bmi.bmiHeader.biCompression = 0
-        self._pbits = _ct.c_void_p()
-        self._hbmp = _ct.windll.gdi32.CreateDIBSection(
-            self._hdc_screen, _ct.byref(bmi), 0, _ct.byref(self._pbits), None, 0)
-        _ct.windll.gdi32.SelectObject(self._hdc_src, self._hbmp)
-        self._is_layered = True
 
-    def _teardown_layered(self):
-        """Destroy sprite window and release DIB."""
-        if self._hbmp:
-            _ct.windll.gdi32.DeleteObject(self._hbmp); self._hbmp = None
-        if self._hdc_src:
-            _ct.windll.gdi32.DeleteDC(self._hdc_src); self._hdc_src = None
-        if self._hdc_screen:
-            _ct.windll.user32.ReleaseDC(0, self._hdc_screen); self._hdc_screen = None
-        if self._sprite_win:
-            try: self._sprite_win.destroy()
-            except: pass
-        self._sprite_win = None
-        self._is_layered = False
-
-    def _render_sprite_frame(self, p):
-        """Compose sprite frame to PIL RGBA with glow, sprite, decor, badge."""
-        img = Image.new("RGBA", (SC, SC), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        cx = cy = SC // 2; r = SR
-        # glow rings
-        gm = {"executing":(0x34,0xd3,0x99),"thinking":(0xf5,0x9e,0x0b),"waiting":(0xef,0x44,0x44)}
-        if p in gm:
-            gr, gg, gb = gm[p]
-            for i in range(3):
-                pi = (self.pulse + i * 0.33) % 1.0
-                gr2_ = r + 4 + pi * 18
-                alpha = int((1 - pi) * 200 + 55)
-                draw.ellipse([cx - gr2_, cy - gr2_, cx + gr2_, cy + gr2_],
-                    outline=(gr, gg, min(255, gb + alpha), alpha), width=2)
-        # sprite image
-        spr = self.sprites[self.skin].get(p)
-        if spr:
-            ox = cx - spr.width // 2; oy = cy - spr.height // 2
-            img.paste(spr, (ox, oy), spr)
-        # decor
-        self._draw_decor_pil(draw, p, cx, cy, r)
-        # badge
-        if self.tc > 0:
-            bx, by = cx + r - 2, cy - r + 12
-            draw.ellipse([bx - 11, by - 11, bx + 11, by + 11], fill=(0xef, 0x44, 0x44), outline=(255, 255, 255), width=1)
-            txt = str(self.tc) if self.tc < 100 else "99"
-            fs = 9 if len(txt) <= 1 else 8
-            try:
-                font = ImageFont.truetype(_FONT_PATH, fs)
-            except:
-                font = ImageFont.load_default()
-            bbox = draw.textbbox((0, 0), txt, font=font)
-            tw = bbox[2] - bbox[0]; th = bbox[3] - bbox[1]
-            draw.text((bx - tw//2, by - th//2 - 1), txt, fill=(255, 255, 255), font=font)
-        return img
-
-    def _draw_decor_pil(self, draw, p, cx, cy, r):
-        """Draw phase-specific decorations on PIL Image."""
-        if p == "executing":
-            for i in range(4):
-                a = (self.pulse * 3 + i * 1.57) % 6.283
-                dx = math.cos(a) * (r + 10); dy = math.sin(a) * (r + 10)
-                sz = 3
-                draw.ellipse([cx + dx - sz, cy + dy - sz, cx + dx + sz, cy + dy + sz],
-                    fill=(0x34, 0xd3, 0x99))
-        elif p == "thinking":
-            ps = (math.sin(self.pulse * 2) + 1) / 2
-            fs = 11 + int(ps * 4)
-            try:
-                font = ImageFont.truetype(_FONT_PATH, fs)
-            except:
-                font = ImageFont.load_default()
-            draw.text((cx, cy + r + 12), "?", fill=(0xf5, 0x9e, 0x0b), font=font, anchor="mt")
-        elif p == "waiting":
-            ps = (math.sin(self.pulse * 3) + 1) / 2
-            fs = 15 + int(ps * 6)
-            try:
-                font = ImageFont.truetype(_FONT_PATH, fs)
-            except:
-                font = ImageFont.load_default()
-            draw.text((cx, cy + r + 10), "!", fill=(0xef, 0x44, 0x44), font=font, anchor="mt")
-        else:  # idle
-            for z in self.zzzs:
-                fs = max(7, 11 - z["age"] // 15)
-                try:
-                    font = ImageFont.truetype(_FONT_PATH, fs)
-                except:
-                    font = ImageFont.load_default()
-                draw.text((z["x"], z["y"]), "z", fill=(0x6b, 0x6b, 0x8a), font=font, anchor="mt")
-
-    def _blit_layered(self, img):
-        """Blit PIL RGBA image to sprite window via UpdateLayeredWindow."""
-        if not self._is_layered or not self._pbits or not self._sprite_win:
-            return
-        bgra = img.tobytes("raw", "BGRA")
-        _ct.memmove(self._pbits, bgra, len(bgra))
-        hwnd = int(self._sprite_win.frame(), 16)
-        bf = _BLENDFUNC(0, 0, 255, 1)
-        _ct.windll.user32.UpdateLayeredWindow(
-            hwnd, self._hdc_screen, None,
-            _ct.byref(_w.SIZE(SC, SC)),
-            self._hdc_src, _ct.byref(_w.POINT(0, 0)), 0,
-            _ct.byref(bf), ULW_ALPHA)
-        self._sprite_win.deiconify()  # show after first blit
 
     def _anim(self):
         self.pulse += 0.05
@@ -606,34 +494,30 @@ class App:
     def _set_skin(self, skin):
         self.skin = skin
         self._skin_var.set(skin)
-        if skin in self.sprites:
-            w = h = SC
-            # hide root in sprite mode — _draw will create sprite_win
-        else:
-            if self._is_layered:
-                self._teardown_layered()
-            self.root.deiconify()
-            w = CW; h = CH
+        w = SC if skin in self.sprites else CW
+        h = SC if skin in self.sprites else CH
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
         self.canvas.config(width=w, height=h)
-        self.root.geometry(f"{w}x{h}")
+        self.root.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
         self.zzzs.clear()
 
-    def _drag(self,e):
+    def _drag(self, e):
         w = SC if self.skin in self.sprites else CW
         h = SC if self.skin in self.sprites else CH
-        x=self.root.winfo_x()+e.x-w//2
-        y=self.root.winfo_y()+e.y-h//2
+        x = self.root.winfo_x() + e.x - w // 2
+        y = self.root.winfo_y() + e.y - h // 2
         self.root.geometry(f"+{x}+{y}")
-        if self._sprite_win:
-            self._sprite_win.geometry(f"+{x}+{y}")
         if self.popen and self.panel:
-            self.panel.geometry(f"+{max(0,x-PW+w)}+{max(0,y-PH-12)}")
+            self.panel.geometry(f"+{max(0, x - PW + w)}+{max(0, y - PH - 12)}")
 
     def _close(self):
-        self.running=False
-        self._teardown_layered()
-        self._hide_panel(); self.root.destroy()
-        try: os.remove(LOCK_FILE)
-        except: pass
+        self.running = False
+        self._hide_panel()
+        self.root.destroy()
+        try:
+            os.remove(LOCK_FILE)
+        except:
+            pass
 
 if __name__=="__main__": App()
