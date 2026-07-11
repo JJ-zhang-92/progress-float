@@ -272,7 +272,6 @@ class App:
     def _init_layered(self):
         """Set WS_EX_LAYERED on window, create persistent DIB section."""
         hwnd = int(self.root.frame(), 16)
-        # Add WS_EX_LAYERED
         ex = _ct.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         _ct.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
         # Screen DC (cached)
@@ -474,7 +473,7 @@ class App:
         if len(projs)>1:
             for pn in sorted(projs):
                 p=projs[pn]
-                groups.append(("project",pn,p.get("active",False),p.get("toolCount",0),p.get("taskCount",0),p.get("activeTools",[]),p.get("sessions",{}),pn,"","",[]))
+                groups.append(("project",pn,p.get("active",False),p.get("toolCount",0),p.get("taskCount",0),p.get("activeTools",[]),p.get("sessions",{}),pn,"","","",[]))
         elif len(projs)==1:
             pn,p=next(iter(projs.items()))
             ss=p.get("sessions",{}) or self.sessions
@@ -486,7 +485,7 @@ class App:
                     stat=si.get("status","idle")
                     act=si.get("activity","Idle")
                     rdescs=si.get("runningDescriptions",[])
-                    groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{},pname,stat,act,rdescs))
+                    groups.append(("agent",a,si.get("active",False),si.get("runningCount",0),si.get("taskCount",0),st,{},"",pname,stat,act,rdescs))
             elif pt:
                 groups=self._fallback(pt)
         elif self.sessions:
