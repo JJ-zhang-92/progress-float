@@ -183,7 +183,8 @@ function coPetRuntimeDir() {
 
 let _copetEndpoint = null;
 let _copetToken = null;
-let _copetLastEvent = null;  // deduplicate identical events
+let _copetLastEvent = null;  // deduplicate identical events (except thinking)
+let _copetLastTime = {};     // throttle thinking events to 500ms
 
 function loadCoPetConfig() {
   if (_copetEndpoint) return true;
@@ -197,10 +198,16 @@ function loadCoPetConfig() {
 
 function sendCoPetEvent(kind, tool) {
   if (!loadCoPetConfig()) return;
-  // Dedupe: skip if same kind+tool as last event
   const key = kind + (tool || "");
-  if (key === _copetLastEvent) return;
-  _copetLastEvent = key;
+  // Thinking: throttle to 500ms instead of complete dedupe (heartbeat support)
+  if (kind === "thinking") {
+    const now = Date.now();
+    if (_copetLastTime[key] && now - _copetLastTime[key] < 500) return;
+    _copetLastTime[key] = now;
+  } else {
+    if (key === _copetLastEvent) return;
+    _copetLastEvent = key;
+  }
 
   const body = JSON.stringify({ agent: "opencode", kind, tool: tool || "", toolInput: undefined });
   try {
@@ -269,6 +276,11 @@ setInterval(() => {
   writeState();
   scheduleReport();
 }, 10_000);
+
+// Thinking heartbeat — keep CoPet from timing out during LLM processing
+setInterval(() => {
+  if (_thinking) sendCoPetEvent("thinking");
+}, 2_000);
 
 export const ProgressFloatPlugin = async ({ directory }) => {
   projectName = basename(directory);
