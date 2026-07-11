@@ -1,6 +1,7 @@
 // Progress Float — OpenCode plugin
 // Tracks tool execution lifecycle grouped by session/agent.
 // Reports state to the aggregation server via HTTP POST.
+// Also sends simplified events to CoPet runtime for visual desktop pet.
 // Built-in cleanup: 120s tool timeout, 10min session TTL, dynamic count.
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -8,6 +9,7 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { request } from "node:http";
+import os from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -172,7 +174,53 @@ function writeState() {
   writeFileSync(join(CACHE_DIR, "heartbeat"), String(Date.now()));
 }
 
-// Fire-and-forget POST to aggregation server (debounced, max 1 per 2s)
+// CoPet desktop pet bridge — sends simplified events to CoPet runtime
+function coPetRuntimeDir() {
+  const env = process.env.COPET_RUNTIME_DIR;
+  if (env) return env;
+  return join(os.homedir(), ".copet", "runtime");
+}
+
+let _copetEndpoint = null;
+let _copetToken = null;
+let _copetLastEvent = null;  // deduplicate identical events
+
+function loadCoPetConfig() {
+  if (_copetEndpoint) return true;
+  const rd = coPetRuntimeDir();
+  try {
+    _copetEndpoint = readFileSync(join(rd, "event-endpoint"), "utf8").trim();
+    _copetToken = readFileSync(join(rd, "event-token"), "utf8").trim();
+    return !!(_copetEndpoint && _copetToken);
+  } catch { return false; }
+}
+
+function sendCoPetEvent(kind, tool) {
+  if (!loadCoPetConfig()) return;
+  // Dedupe: skip if same kind+tool as last event
+  const key = kind + (tool || "");
+  if (key === _copetLastEvent) return;
+  _copetLastEvent = key;
+
+  const body = JSON.stringify({ agent: "opencode", kind, tool: tool || "", toolInput: undefined });
+  try {
+    const url = new URL(_copetEndpoint);
+    if (url.protocol !== "http:") return;
+    const req = request({
+      hostname: url.hostname, port: url.port || 80,
+      path: `${url.pathname}${url.search}`, method: "POST",
+      timeout: 800,
+      headers: {
+        "Authorization": `Bearer ${_copetToken}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    }, (res) => { res.resume(); });
+    req.on("error", () => {});
+    req.on("timeout", () => { req.destroy(); });
+    req.end(body);
+  } catch {}
+}
 let lastReportTime = 0;
 let reportTimer = null;
 let projectName = "";
@@ -231,6 +279,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
       _thinking = true;
       waitingForUser = false;
       taskCount++;
+      sendCoPetEvent("user.prompt");
       currentSession = input.sessionID;
       const sid = input.sessionID;
       if (!sessions[sid]) {
@@ -251,6 +300,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
 
     "tool.execute.before": async (input) => {
       waitingForUser = false;
+      sendCoPetEvent("tool.before", input.tool);
       const sid = input.sessionID;
       if (!sessions[sid]) {
         sessions[sid] = {
@@ -287,6 +337,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
       const stillRunning = activeTools.filter((t) => t.status === "running");
       if (stillRunning.length === 0) {
         _thinking = true;
+        sendCoPetEvent("tool.after", input.tool);
       }
       writeState();
       scheduleReport();
@@ -300,6 +351,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
 
     "permission.ask": async (_input) => {
       waitingForUser = true;
+      sendCoPetEvent("permission.waiting");
       writeState();
       scheduleReport();
     },

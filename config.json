@@ -3,8 +3,5 @@
   "cacheDir": "",
   "toolTimeoutMs": 120000,
   "sessionTtlMs": 600000,
-  "reportTtlMs": 30000,
-  "thinkingTimeoutS": 8,
-  "staleThresholdS": 60,
-  "heartbeatThresholdS": 15
+  "reportTtlMs": 30000
 }
