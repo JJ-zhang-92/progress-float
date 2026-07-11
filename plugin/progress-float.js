@@ -333,11 +333,12 @@ export const ProgressFloatPlugin = async ({ directory }) => {
       if (sessions[input.sessionID]) {
         sessions[input.sessionID].lastActivity = new Date().toISOString();
       }
+      // Send tool.after for every completed tool (CoPet needs this per-tool)
+      sendCoPetEvent("tool.after", input.tool);
       // If no more running tools, model is processing result → thinking
       const stillRunning = activeTools.filter((t) => t.status === "running");
       if (stillRunning.length === 0) {
         _thinking = true;
-        sendCoPetEvent("tool.after", input.tool);
       }
       writeState();
       scheduleReport();
@@ -345,6 +346,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
 
     "experimental.text.complete": async (_input) => {
       _thinking = false;
+      sendCoPetEvent("session.stop");
       writeState();
       scheduleReport();
     },
