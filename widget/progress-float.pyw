@@ -207,7 +207,8 @@ class App:
         if self.skin in self.sprites:
             if not self._is_layered:
                 self._init_layered()
-                self.canvas.pack_forget()
+                self.canvas.config(width=0, height=0)
+                self.root.geometry(f"{SC}x{SC}")
             frame = self._render_sprite_frame(p)
             self._blit_layered(frame)
             return
@@ -215,6 +216,7 @@ class App:
         # Classic ball: ensure canvas is visible
         if self._is_layered:
             self._teardown_layered()
+            self.canvas.config(width=CW, height=CH)
             self.canvas.pack()
         c=self.canvas; c.delete("all")
         cx, cy = CW//2, CH//2
@@ -274,6 +276,8 @@ class App:
         hwnd = int(self.root.frame(), 16)
         ex = _ct.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         _ct.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED)
+        _ct.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
         # Screen DC (cached)
         if not self._hdc_screen:
             self._hdc_screen = _ct.windll.user32.GetDC(0)
