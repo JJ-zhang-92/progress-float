@@ -15,9 +15,9 @@ SHEET_H = ROWS * CELL_H  # 1872
 # CoPet rows: 0=Review, 1=RunningRight, 2=RunningLeft, 3=Waving, 4=Jumping, 5=Failed, 6=Waiting, 7=Running, 8=Idle
 PHASE_ROW = {
     "working": 7,    # executing → Running
-    "thinking": 0,   # thinking → Review
+    "thinking": 8,   # thinking → Review (repurposed for Thinking via petAnimation.ts)
     "alert": 6,      # waiting → Waiting
-    "idle": 8,       # idle → Idle
+    "idle": 0,       # idle → Idle
 }
 
 FRAMES_PER_ROW = 6  # generate 6 frames per row with slight variation

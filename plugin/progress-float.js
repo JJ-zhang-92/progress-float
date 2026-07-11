@@ -339,6 +339,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
       const stillRunning = activeTools.filter((t) => t.status === "running");
       if (stillRunning.length === 0) {
         _thinking = true;
+        sendCoPetEvent("thinking");
       }
       writeState();
       scheduleReport();
@@ -346,7 +347,7 @@ export const ProgressFloatPlugin = async ({ directory }) => {
 
     "experimental.text.complete": async (_input) => {
       _thinking = false;
-      sendCoPetEvent("session.stop");
+      sendCoPetEvent("thinking");
       writeState();
       scheduleReport();
     },
