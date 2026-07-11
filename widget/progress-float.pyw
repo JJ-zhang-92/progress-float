@@ -1,13 +1,13 @@
 """Progress Float — OpenCode floating progress ball.
-State machine: GREEN(active) → AMBER(thinking) → GRAY(idle) → RED(waiting)"""
+State machine: WAITING(red) > EXECUTING(green) > THINKING(amber) > IDLE(gray)
+Skins: Ball / Chibi Sprite / 动漫3D"""
+import os as _os; _SPRITE_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "sprites")
 
 import tkinter as tk
 import threading, time, math, sys, os, atexit, ctypes, subprocess
 import json as _json
 import urllib.request, urllib.error
 from PIL import Image, ImageDraw, ImageTk
-
-_SPRITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprites")
 
 # Config from config.json
 _config = {"port":19822,"cacheDir":"","thinkingTimeoutS":8,"staleThresholdS":60,"heartbeatThresholdS":15}
@@ -104,11 +104,10 @@ BR=30; CW,CH=120,120; PW,PH=320,400
 SR=55; SC=200  # sprite radius, sprite canvas size
 FEATHER=14
 
-def _load_sprites(size=110, feather=10):
-    """Load PNG sprites, resize and apply radial-gradient circular mask. Returns {phase: PhotoImage}."""
+def _load_sprites_from(d, size=110, feather=10):
+    """Load PNG sprites from directory d, resize and apply radial-gradient circular mask."""
     import numpy as np
     sprites = {}
-    # Build radial gradient mask: 255 at center, 0 at edge, smooth transition
     mask = np.zeros((size, size), dtype=np.uint8)
     cy = cx = size / 2.0
     radius = size / 2.0
@@ -124,7 +123,7 @@ def _load_sprites(size=110, feather=10):
                 mask[y, x] = int(t * 255)
     pil_mask = Image.fromarray(mask, mode="L")
     for phase, fn in [("executing","working"), ("thinking","thinking"), ("idle","idle"), ("waiting","alert")]:
-        p = os.path.join(_SPRITE_DIR, fn + ".png")
+        p = os.path.join(d, fn + ".png")
         if not os.path.exists(p): continue
         img = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
         img.putalpha(pil_mask)
@@ -152,10 +151,13 @@ class App:
         self.task_count=0; self.pulse=0.0
         self.panel=None; self.pc=None; self.popen=False; self.running=True
 
-        # sprite mode
-        self.sprite_mode = False
+        # skin system
+        self.skin = "ball"
         self._skin_var = tk.StringVar(value="ball")
-        self.sprites = _load_sprites(170, FEATHER)
+        self.sprites = {
+            "chibi": _load_sprites_from(os.path.join(_SPRITE_DIR, "chibi"), 170, FEATHER),
+            "cn3d": _load_sprites_from(os.path.join(_SPRITE_DIR, "cn3d"), 170, FEATHER),
+        }
         self.zzzs = []         # idle Zzz float particles
         self._decor_timer = 0  # ticks for decor animations
 
@@ -202,13 +204,15 @@ class App:
         c=self.canvas; c.delete("all")
         p=self.phase
 
-        if self.sprite_mode and p in self.sprites:
-            self._draw_sprite(c, p)
-        else:
-            cx, cy = CW//2, CH//2
-            self._draw_ball(c, cx, cy, BR, p)
+        if self.skin in self.sprites:
+            spr = self.sprites[self.skin]
+            if p in spr:
+                self._draw_sprite(c, p, spr)
+                return
+        cx, cy = CW//2, CH//2
+        self._draw_ball(c, cx, cy, BR, p)
 
-    def _draw_sprite(self, c, p):
+    def _draw_sprite(self, c, p, spr):
         cx = cy = SC // 2; r = SR
         # glow ring — dynamic radius around sprite
         glow_map = {"executing":(0x34,0xd3,0x99),"thinking":(0xf5,0x9e,0x0b),"waiting":(0xef,0x44,0x44)}
@@ -220,7 +224,7 @@ class App:
                 c.create_oval(cx-gr2_,cy-gr2_,cx+gr2_,cy+gr2_,
                     outline=f"#{gr2:02x}{gg2:02x}{min(255,gb2+alpha):02x}",width=2)
         # sprite image
-        c.create_image(cx, cy, image=self.sprites[p])
+        c.create_image(cx, cy, image=spr[p])
         # decor: state-specific indicators outside sprite
         self._draw_decor(c, p, cx, cy, r)
         # badge — top-right
@@ -309,7 +313,7 @@ class App:
         self._decor_timer += 1
 
         # idle Zzz float animation: spawn every ~3s, drift up, shrink, expire
-        if self.sprite_mode and self.phase == "idle" and self._decor_timer % 90 == 0:
+        if self.skin in self.sprites and self.phase == "idle" and self._decor_timer % 90 == 0:
             cx = SC // 2
             self.zzzs.append({"x": cx - 30, "y": SC - 10, "age": 0})
         # update existing zzz particles
@@ -346,7 +350,7 @@ class App:
         self.panel.overrideredirect(True); self.panel.attributes("-topmost",True)
         self.panel.attributes("-transparentcolor",T.MAGENTA); self.panel.configure(bg=T.MAGENTA)
         bx,by=self.root.winfo_x(),self.root.winfo_y()
-        w = SC if self.sprite_mode else CW
+        w = SC if self.skin in self.sprites else CW
         self.panel.geometry(f"{PW}x{PH}+{max(0,bx-PW+w)}+{max(0,by-PH-12)}")
         self.pc=tk.Canvas(self.panel,width=PW,height=PH,bg=T.MAGENTA,highlightthickness=0)
         self.pc.pack()
@@ -487,10 +491,12 @@ class App:
     def _right_click(self,event):
         menu=tk.Menu(self.root,tearoff=0)
         appearance=tk.Menu(menu,tearoff=0)
-        appearance.add_radiobutton(label="Ball", variable=self._skin_var, value="ball",
+        appearance.add_radiobutton(label="Classic Ball", variable=self._skin_var, value="ball",
             command=lambda: self._set_skin("ball"))
-        appearance.add_radiobutton(label="Sprite", variable=self._skin_var, value="sprite",
-            command=lambda: self._set_skin("sprite"))
+        appearance.add_radiobutton(label="Chibi Sprite", variable=self._skin_var, value="chibi",
+            command=lambda: self._set_skin("chibi"))
+        appearance.add_radiobutton(label="动漫3D", variable=self._skin_var, value="cn3d",
+            command=lambda: self._set_skin("cn3d"))
         appearance.add_separator()
         appearance.add_command(label="+ Add skin...", state="disabled")
         menu.add_cascade(label="Appearance", menu=appearance)
@@ -499,16 +505,17 @@ class App:
         menu.post(event.x_root,event.y_root)
 
     def _set_skin(self, skin):
-        self.sprite_mode = (skin == "sprite")
-        w = SC if self.sprite_mode else CW
-        h = SC if self.sprite_mode else CH
+        self.skin = skin
+        self._skin_var.set(skin)
+        w = SC if skin in self.sprites else CW
+        h = SC if skin in self.sprites else CH
         self.canvas.config(width=w, height=h)
         self.root.geometry(f"{w}x{h}")
         self.zzzs.clear()
 
     def _drag(self,e):
-        w = SC if self.sprite_mode else CW
-        h = SC if self.sprite_mode else CH
+        w = SC if self.skin in self.sprites else CW
+        h = SC if self.skin in self.sprites else CH
         x=self.root.winfo_x()+e.x-w//2
         y=self.root.winfo_y()+e.y-h//2
         self.root.geometry(f"+{x}+{y}")
