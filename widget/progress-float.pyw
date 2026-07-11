@@ -154,10 +154,9 @@ class App:
         # skin system
         self.skin = "ball"
         self._skin_var = tk.StringVar(value="ball")
-        self.sprites = {
-            "chibi": _load_sprites_from(os.path.join(_SPRITE_DIR, "chibi"), 170, FEATHER),
-            "cn3d": _load_sprites_from(os.path.join(_SPRITE_DIR, "cn3d"), 170, FEATHER),
-        }
+        self.sprites = {}
+        for sd in [d for d in os.listdir(_SPRITE_DIR) if os.path.isdir(os.path.join(_SPRITE_DIR, d)) and os.path.exists(os.path.join(_SPRITE_DIR, d, "working.png"))]:
+            self.sprites[sd] = _load_sprites_from(os.path.join(_SPRITE_DIR, sd), 170, FEATHER)
         self.zzzs = []         # idle Zzz float particles
         self._decor_timer = 0  # ticks for decor animations
 
@@ -493,10 +492,10 @@ class App:
         appearance=tk.Menu(menu,tearoff=0)
         appearance.add_radiobutton(label="Classic Ball", variable=self._skin_var, value="ball",
             command=lambda: self._set_skin("ball"))
-        appearance.add_radiobutton(label="Chibi Sprite", variable=self._skin_var, value="chibi",
-            command=lambda: self._set_skin("chibi"))
-        appearance.add_radiobutton(label="动漫3D", variable=self._skin_var, value="cn3d",
-            command=lambda: self._set_skin("cn3d"))
+        appearance.add_separator()
+        for sk in sorted(self.sprites):
+            appearance.add_radiobutton(label=sk, variable=self._skin_var, value=sk,
+                command=lambda s=sk: self._set_skin(s))
         appearance.add_separator()
         appearance.add_command(label="+ Add skin...", state="disabled")
         menu.add_cascade(label="Appearance", menu=appearance)
